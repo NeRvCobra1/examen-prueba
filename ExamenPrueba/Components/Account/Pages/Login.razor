@@ -3,9 +3,10 @@
 @using System.ComponentModel.DataAnnotations
 @using Microsoft.AspNetCore.Authentication
 @using Microsoft.AspNetCore.Identity
+@using ExamenPrueba.Application.Authentication
 @using ExamenPrueba.Data
 
-@inject UserManager<ApplicationUser> UserManager
+@inject IAccountAuthenticationService AuthenticationService
 @inject SignInManager<ApplicationUser> SignInManager
 @inject ILogger<Login> Logger
 @inject NavigationManager NavigationManager
@@ -18,10 +19,12 @@
     <div class="col-lg-6">
         <section>
             <StatusMessage Message="@errorMessage" />
-            <EditForm EditContext="editContext" method="post" OnSubmit="LoginUser" FormName="login">
+            <EditForm EditContext="editContext" method="post" OnSubmit="LoginUser" FormName="login"
+                      id="login-form" data-auth-api="login">
                 <DataAnnotationsValidator />
                 <h2>Use a local account to log in.</h2>
                 <hr />
+                <div id="auth-api-error" class="alert alert-danger d-none" role="alert"></div>
                 <ValidationSummary class="text-danger" role="alert" />
                 <div class="form-floating mb-3">
                     <InputText @bind-Value="Input.Email" id="Input.Email" class="form-control" autocomplete="username webauthn" aria-required="true" placeholder="name@example.com" />
@@ -119,9 +122,34 @@
                 return;
             }
 
-            // This doesn't count login failures towards account lockout
-            // To enable password failures to trigger account lockout, set lockoutOnFailure: true
-            result = await SignInManager.PasswordSignInAsync(Input.Email, Input.Password, Input.RememberMe, lockoutOnFailure: false);
+            var loginResult = await AuthenticationService.LoginAsync(new AccountLoginRequest(
+                Input.Email,
+                Input.Password,
+                Input.RememberMe));
+            if (loginResult.Kind == AccountLoginResultKind.Success)
+            {
+                RedirectManager.RedirectTo(ReturnUrl);
+                return;
+            }
+
+            if (loginResult.Kind == AccountLoginResultKind.RequiresTwoFactor)
+            {
+                RedirectManager.RedirectTo(
+                    "Account/LoginWith2fa",
+                    new() { ["returnUrl"] = ReturnUrl, ["rememberMe"] = Input.RememberMe });
+                return;
+            }
+
+            if (loginResult.Kind == AccountLoginResultKind.LockedOut)
+            {
+                RedirectManager.RedirectTo("Account/Lockout");
+                return;
+            }
+
+            errorMessage = loginResult.Kind == AccountLoginResultKind.Validation
+                ? $"Error: {string.Join(", ", loginResult.Errors!.Values.SelectMany(errors => errors))}"
+                : "Error: Invalid login attempt.";
+            return;
         }
 
         if (result.Succeeded)

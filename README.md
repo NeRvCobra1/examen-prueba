@@ -1,10 +1,10 @@
 # ExamenPrueba
 
-Blazor Web App en .NET 10 con servidor ASP.NET Core, cliente WebAssembly, Identity, EF Core y SQLite. E1 incorpora roles, permisos, autorización y límite de login; E2 agrega el CRUD de usuarios; E3 agrega el CRUD de roles y la gestión Usuario–Rol. El alcance de las entregas y las reglas de trabajo están en [AGENTS.md](AGENTS.md).
+Aplicación demostrable de administración de identidades y autorización granular. Es un monolito modular en .NET 10 con Blazor Web App, ASP.NET Core Identity, EF Core y SQLite. Incluye registro e inicio/cierre de sesión, CRUD de usuarios, roles y permisos, relaciones Usuario–Rol y Rol–Permiso, autorización dinámica desde SQLite, antiforgery y rate limiting configurable. El alcance de las entregas y las reglas de trabajo están en [AGENTS.md](AGENTS.md).
 
 ## Requisitos y arranque local
 
-- SDK .NET 10 y Python 3 para la prueba automatizada opcional.
+- SDK .NET 10 y Python 3 para las pruebas end-to-end.
 - Certificado de desarrollo HTTPS instalado. Verificarlo con `dotnet dev-certs https --check --verbose`; el proyecto no modifica certificados del sistema.
 
 Desde la raíz del repositorio, en la terminal de VS Code:
@@ -23,6 +23,47 @@ Abrir `https://localhost:7205`. El perfil también escucha en `http://localhost:
 `DefaultConnection` usa `ExamenPrueba/Data/app.db` cuando la aplicación se ejecuta desde el proyecto servidor. La aplicación aplica las migraciones al iniciar. También se pueden aplicar manualmente desde `ExamenPrueba` con `dotnet dotnet-ef database update` después de `dotnet tool restore`.
 
 Las migraciones son `00000000000000_CreateIdentitySchema` y `20261106232734_AddRoleBasedPermissions`. La segunda solo agrega `Permissions`, `RolePermissions`, sus claves, relaciones e índices. Conserva todas las tablas originales de Identity, incluida `AspNetUserPasskeys`. En una base existente, crear primero un respaldo consistente de SQLite y comprobar las migraciones pendientes. La base y sus respaldos `*.db` están excluidos de Git.
+
+## Arquitectura
+
+La solución mantiene tres capas dentro de un único proceso y un único origen HTTPS:
+
+- **Presentación:** `Components`, `ExamenPrueba.Client` y `Presentation/Api`. Blazor presenta las pantallas y consume Minimal APIs; las páginas Razor de Identity procesan registro, login, logout y administración de la cuenta.
+- **Aplicación:** `Application` contiene contratos, DTOs, servicios, validaciones y reglas de seguridad. Las páginas no acceden a EF Core de forma directa.
+- **Infraestructura:** `Infrastructure` integra Identity, EF Core, SQLite, inicialización RBAC, autorización y rate limiting.
+
+Una solicitud administrativa sigue este recorrido: navegador Blazor → endpoint HTTPS → autenticación por cookie → rate limiter → política de autorización → validación antiforgery en mutaciones → servicio de aplicación → Identity/EF Core → SQLite. El backend vuelve a resolver los permisos efectivos desde las relaciones actuales de SQLite en cada solicitud; ocultar un control en Blazor solo mejora la interfaz y nunca sustituye la autorización del endpoint.
+
+### Modelo relacional
+
+Identity proporciona usuarios, roles y la tabla de unión Usuario–Rol. La aplicación agrega el catálogo `Permissions` y la unión `RolePermissions`, cuya clave compuesta impide duplicados.
+
+```mermaid
+erDiagram
+    AspNetUsers ||--o{ AspNetUserRoles : tiene
+    AspNetRoles ||--o{ AspNetUserRoles : asigna
+    AspNetRoles ||--o{ RolePermissions : concede
+    Permissions ||--o{ RolePermissions : incluye
+
+    AspNetUsers {
+        string Id PK
+        string Email
+    }
+    AspNetRoles {
+        string Id PK
+        string Name
+    }
+    Permissions {
+        int Id PK
+        string Code UK
+        string Name
+        string Description
+    }
+    RolePermissions {
+        string RoleId PK,FK
+        int PermissionId PK,FK
+    }
+```
 
 ## Cuentas y prueba manual de E1
 
@@ -46,17 +87,36 @@ El bootstrap se ejecuta solo si `AdminBootstrap:Enabled` es `true` y el entorno 
 dotnet user-secrets set "AdminBootstrap:Enabled" "false" --project ExamenPrueba
 ```
 
-Reiniciar y acceder con esa cuenta. `/dashboard` debe mostrar los doce permisos y el resumen administrativo. El servidor consulta SQLite para resolver cada permiso efectivo; el navegador no decide el acceso. El bootstrap es para desarrollo local. E2 administra usuarios y E3 administra roles y asignaciones Usuario–Rol. La administración de permisos corresponde a E4 y no está implementada.
+Reiniciar y acceder con esa cuenta. `/dashboard` debe mostrar los doce permisos y el resumen administrativo. El servidor consulta SQLite para resolver cada permiso efectivo; el navegador no decide el acceso. El bootstrap es para desarrollo local. E2 administra usuarios, E3 administra roles y asignaciones Usuario–Rol, y E4 administra permisos personalizados y asignaciones Rol–Permiso.
 
-## APIs y límite de login
+## Autenticación, APIs de sesión y rate limiting
 
 | Ruta | Acceso | Resultado esperado |
 | --- | --- | --- |
 | `GET /api/auth/me` | Usuario autenticado | Id, correo y roles; anónimo: 401. |
+| `GET /api/auth/antiforgery` | Público | Emite cookie y token antiforgery; `Cache-Control: no-store`. |
+| `POST /api/auth/register` | Público + antiforgery + límite de registro | Crea una cuenta sin confirmar y asigna exclusivamente `User`. |
+| `POST /api/auth/login` | Público + antiforgery + límite de login | Valida cuenta confirmada y emite cookie Identity. |
+| `POST /api/auth/logout` | Autenticado + antiforgery | Invalida la cookie y devuelve 204. |
 | `GET /api/security/capabilities` | Usuario autenticado | Códigos de permisos efectivos; anónimo: 401. |
 | `GET /api/admin/overview` | Permiso `users.read` | Resumen sin datos sensibles; anónimo: 401; sin permiso: 403. |
 
-La política de rate limiting protege el **POST real `/Account/Login`** de Identity: ventana fija de 60 segundos, cinco solicitudes por IP, sin cola y respuesta 429 con `Retry-After` al excederla. `GET /Account/Login` y la navegación normal quedan fuera del límite. Los valores se configuran en `RateLimiting:Login` dentro de `ExamenPrueba/appsettings.json` o mediante configuración del entorno. Se usa la IP de la conexión, sin confiar en cabeceras IP enviadas por el cliente. Se conserva antiforgery y la configuración segura de cookies de la plantilla.
+E5.1 alinea la autenticación con el requisito de API sin duplicar el modelo de seguridad. Los formularios existentes de registro, login y logout interceptan el submit mediante `fetch`, obtienen o reutilizan un token antiforgery, llaman a `/api/auth/*` con `credentials: same-origin` y navegan tras la respuesta. El POST server-side permanece como fallback sin JavaScript, pero ambos caminos usan `IAccountAuthenticationService`; el registro delega además en el mismo `IUserService` que conserva transacción, validaciones, confirmación y rol `User`.
+
+No se habilita `MapIdentityApi`: además de mapear más operaciones de las requeridas, su registro estándar crea el usuario pero no aplica la asignación exclusiva de `User`, y su login puede seleccionar autenticación bearer cuando no se fuerzan cookies. Los endpoints específicos del proyecto exponen solo cookies Identity y los tres flujos solicitados. Para un cliente JSON, el orden es: obtener `GET /api/auth/antiforgery`, enviar el token en `X-CSRF-TOKEN`, conservar la cookie antiforgery y, después del login, conservar también la cookie de sesión.
+
+Las cuatro políticas usan ventana fija y `QueueLimit = 0`; se configuran bajo `RateLimiting` en `ExamenPrueba/appsettings.json` y se validan al arrancar. Los cambios se aplican al reiniciar, no en tiempo real.
+
+| Política | Operación real | Límite normal | Partición |
+| --- | --- | --- | --- |
+| Login | `POST /Account/Login` y `POST /api/auth/login` | 5 por 60 segundos compartidos | IP de la conexión |
+| Registro | `POST /Account/Register` y `POST /api/auth/register` | 3 por 600 segundos compartidos | IP de la conexión |
+| Lectura administrativa | GET de usuarios, roles, permisos y sus dos matrices | 60 por 60 segundos | Id estable del usuario |
+| Mutación administrativa | POST, PUT y DELETE de los CRUD y relaciones RBAC | 20 por 60 segundos | Id estable del usuario |
+
+El middleware responde 429. Cuando el limitador proporciona metadatos válidos, envía `Retry-After`; las APIs reciben un `ProblemDetails` JSON genérico y los formularios Identity un texto genérico. Una solicitud puede recibir 429 antes de autorización, antiforgery o validación porque el limitador se ejecuta después de autenticación y antes de autorización. `GET` de formularios, recursos estáticos, navegación Blazor y APIs de sesión/antiforgery no consumen los contadores administrativos.
+
+Para tráfico público se usa exclusivamente `HttpContext.Connection.RemoteIpAddress`: una cabecera `X-Forwarded-For` enviada por un cliente no cambia la partición. En un despliegue tras proxy inverso se deben configurar proxies/redes confiables y `ForwardedHeaders` antes del limitador; no debe confiarse globalmente en esa cabecera. Usuarios tras el mismo NAT comparten contador público. Los contadores viven en memoria y son independientes por instancia; esta entrega no agrega almacenamiento distribuido.
 
 ## CRUD de usuarios (E2)
 
@@ -107,17 +167,51 @@ Las mutaciones requieren `X-CSRF-TOKEN`. Para asignar o revocar `Admin`, el oper
 5. Con una cuenta sin permisos administrativos, comprobar 403. Sin sesión, comprobar 401. Para probar permisos parciales, usar una base temporal y verificar que la consulta requiere ambos permisos de lectura y la mutación ambos permisos de actualización.
 6. No usar la interfaz para alterar el rol Admin de la propia cuenta. Las pruebas automatizadas cubren autoelevación, autorrevocación, operador Admin vigente y continuidad del último administrador sobre una base temporal aislada.
 
+## CRUD de permisos y matriz Rol–Permiso (E4)
+
+| Método y ruta | Protección | Respuesta principal |
+| --- | --- | --- |
+| `GET /api/permissions?page=1&pageSize=10&search=` | `permissions.read` | 200: catálogo paginado con tipo y número de roles. Máximo 50 por página. |
+| `GET /api/permissions/{id}` | `permissions.read` | 200: detalle seguro; 404 si falta. |
+| `POST /api/permissions` | `permissions.create` + antiforgery | 201: permiso personalizado sin asignaciones. |
+| `PUT /api/permissions/{id}` | `permissions.update` + antiforgery | 200: nombre y descripción actualizados; el código permanece inmutable. |
+| `DELETE /api/permissions/{id}` | `permissions.delete` + antiforgery | 204; 409 si es de sistema o conserva relaciones con roles. |
+| `GET /api/roles/{roleId}/permissions` | `roles.read` **y** `permissions.read` | 200: todos los permisos con su estado, protección y disponibilidad. |
+| `POST /api/roles/{roleId}/permissions/{permissionId}` | `roles.update` **y** `permissions.update`, Admin vigente y antiforgery | 200: matriz actualizada. |
+| `DELETE /api/roles/{roleId}/permissions/{permissionId}` | `roles.update` **y** `permissions.update`, Admin vigente y antiforgery | 200: matriz actualizada. |
+
+Los códigos personalizados se normalizan a minúsculas y deben usar al menos dos segmentos alfanuméricos separados por punto, por ejemplo `reports.read`. Son únicos, tienen hasta 128 caracteres y no se pueden cambiar después del alta. El nombre admite 200 caracteres y la descripción opcional 500. La creación de un permiso no lo asigna a ningún rol.
+
+Los doce códigos de `PermissionCodes.All` son permisos de sistema: se pueden consultar y asignar a roles personalizados, pero no editar ni eliminar. `Admin` conserva sus doce permisos esenciales y la API no permite revocarlos. El rol público `User` no puede recibir directamente permisos administrativos del sistema; las capacidades limitadas se otorgan mediante roles personalizados. El inicializador repone únicamente los permisos esenciales de Admin y no restaura asignaciones eliminadas de roles personalizados.
+
+Un permiso personalizado aparece en las capacidades efectivas al asignarlo, pero **no protege automáticamente un endpoint**. Para autorizar una nueva API, el backend debe declarar una política o requisito que use explícitamente ese código. La resolución efectiva sigue consultando SQLite en cada petición, por lo que las concesiones y revocaciones surten efecto sin iniciar sesión de nuevo.
+
+### Prueba manual de E4
+
+1. Iniciar como Admin de Development y abrir `https://localhost:7205/permissions`. Comprobar que los doce permisos base aparecen como “Sistema” y solo ofrecen detalle.
+2. Crear `reports.read`, consultarlo, buscarlo y editar nombre y descripción. Confirmar que el código no cambia.
+3. Abrir `/roles`, seleccionar un rol personalizado y usar la matriz para asignar y revocar `reports.read`. La casilla debe actualizarse inmediatamente.
+4. Asignar temporalmente `users.read` a un rol personalizado que ya tenga un usuario de prueba. Con la sesión existente de ese usuario, `/api/users` debe cambiar de 403 a 200; al revocar, debe volver a 403.
+5. Comprobar que los permisos base de Admin tienen casillas bloqueadas y que el rol User no permite recibir los doce permisos administrativos.
+6. Revocar `reports.read` de todos los roles y eliminarlo desde `/permissions`. Si aún tiene relaciones, la API debe responder 409. Usar únicamente datos locales de prueba.
+
 ## Verificación automatizada
 
 Después de compilar, desde la raíz:
 
 ```powershell
+dotnet test ExamenPrueba.sln
 python tests/e1_smoke.py
 python tests/e2_users_smoke.py
 python tests/e3_roles_smoke.py
+python tests/e4_permissions_smoke.py
+python tests/e5_rate_limiting_smoke.py
+python tests/e51_auth_api_smoke.py
 ```
 
-Las pruebas crean credenciales aleatorias solo en memoria y bases SQLite temporales, e inician el servidor por HTTPS. E1 comprueba autenticación, permisos, 429 del login y SQLite. E2 comprueba el CRUD de usuarios, permisos, validaciones, token CSRF, reconfirmación, protecciones de borrado e integridad. E3 comprueba CRUD de roles, políticas conjuntas, asignación/revocación, autorización dinámica, antiforgery, roles protegidos, restricciones de Admin y relaciones de integridad. Los procesos y las bases temporales se cierran al terminar. Python no usa el almacén de confianza de certificados de Windows en estas pruebas; los scripts omiten su validación de confianza. Se debe comprobar el certificado de desarrollo por separado con `dotnet dev-certs` y un cliente que use el almacén del sistema.
+`ExamenPrueba.Tests` usa xUnit y `WebApplicationFactory` con SQLite temporal. Cubre autenticación requerida, políticas simples y combinadas, revocación dinámica, DTOs estrictos, protecciones de Admin, integridad RBAC, configuración inválida, 429 y el ciclo JSON registro → confirmación → cookie → logout. Las pruebas Python crean credenciales aleatorias solo en memoria y bases desechables, e inician un servidor HTTPS: E1 cubre autenticación y base RBAC; E2 usuarios; E3 roles y Usuario–Rol; E4 permisos y Rol–Permiso; E5 separación de políticas, usuarios y ventanas; E5.1 valida las tres APIs de autenticación, cookies, CSRF, rol `User`, confirmación, RBAC y límites compartidos.
+
+Los procesos y bases temporales se cierran al terminar. Python omite la validación de confianza TLS únicamente en estos clientes de prueba; el certificado de desarrollo debe comprobarse por separado con `dotnet dev-certs https --check --verbose` y en un navegador que use el almacén del sistema. Las pruebas ejercitan una sola instancia y ventanas reducidas configuradas solo para test; no validan balanceo multiinstancia, carga sostenida ni un proxy inverso real.
 
 Para comprobar que el modelo coincide con la última migración:
 
@@ -127,4 +221,35 @@ dotnet dotnet-ef migrations has-pending-model-changes --no-build
 cd ..
 ```
 
-En la verificación de E1.1, el Dashboard se abrió en un navegador con JavaScript. Mostró los doce permisos y el resumen para Admin; con una cuenta User mostró cero permisos y el estado de acceso denegado. En E2 se verificaron en navegador la lista `/users`, el alta, el detalle, la búsqueda, la edición y la eliminación confirmada de una cuenta temporal. En E3 se verificaron `/roles`, la creación, edición y búsqueda de un rol personalizado, la protección visual de `Admin` y `User`, y la asignación y revocación desde `/users`. El CRUD de permisos queda para E4; el límite completo para otras rutas corresponde a E5.
+En la verificación final se recorrieron en navegador con JavaScript el registro, confirmación local, login/logout, Dashboard, restricciones de User, pantallas de usuarios/roles/permisos, ambas matrices y el cambio dinámico 403 → 200 → 403 sin iniciar sesión de nuevo. También se observó el sexto POST de login rechazado con 429 después de cinco intentos aceptados.
+
+## Seguridad aplicada
+
+- Cookies de Identity, confirmación de correo y políticas de contraseña permanecen del lado servidor y bajo HTTPS.
+- Cada API administrativa declara su permiso o política combinada; el handler obtiene roles y permisos efectivos desde SQLite en cada solicitud.
+- Las mutaciones autenticadas por cookie requieren `X-CSRF-TOKEN`; los formularios Razor conservan su antiforgery propio.
+- `Admin` y `User` son roles protegidos. Los doce permisos del sistema son inmutables; se protege al último administrador y se bloquean autoelevación, autorrevocación y autoeliminación.
+- Los DTOs de salida no exponen hashes, sellos, tokens ni otras propiedades internas de Identity. Las entradas con propiedades inesperadas se rechazan.
+- Los límites inválidos impiden el arranque mediante Options validation. El limitador no sustituye autorización, antiforgery ni validación.
+
+## Demostración para el examen
+
+1. Restaurar herramientas y paquetes, compilar y ejecutar con el perfil `https`. Mostrar `https://localhost:7205`.
+2. Registrar una cuenta temporal, abrir la confirmación simulada y entrar. Mostrar el Dashboard de `User`, el 403 administrativo y el cierre de sesión.
+3. Activar una cuenta Admin mediante User Secrets de Development y reiniciar con el bootstrap desactivado.
+4. En `/users`, crear, consultar y editar una cuenta temporal. En `/roles`, crear y editar un rol; asignarlo y revocarlo desde el usuario.
+5. En `/permissions`, crear y editar un permiso; asignarlo y revocarlo en la matriz del rol. Usar un rol temporal con `users.read` para demostrar 403 → 200 → 403 en la misma sesión.
+6. Mostrar antiforgery con una mutación sin token (400) y los códigos 401, 403, 404 y 409 cubiertos por las suites.
+7. En una base temporal, ejecutar seis intentos de login: los cinco primeros llegan a Identity y el sexto devuelve 429 con `Retry-After`.
+8. Ejecutar `dotnet test ExamenPrueba.sln` y los cinco scripts Python. Terminar con `PRAGMA integrity_check`, `PRAGMA foreign_key_check` y la comprobación de migraciones pendientes.
+
+Usar únicamente cuentas y bases temporales para operaciones destructivas; nunca la base local principal.
+
+## Limitaciones para uso público
+
+- El correo es simulado: confirmación y recuperación no envían mensajes reales.
+- El runtime y los paquetes deben mantenerse en parches soportados y volver a auditarse antes de publicar.
+- SQLite es adecuado para esta demostración y carga moderada de una instancia, pero tiene concurrencia de escritura limitada; no reemplaza una base de datos de servidor para escalado horizontal.
+- Los contadores del rate limiter son locales a cada proceso y no se coordinan entre instancias.
+- Un proxy inverso requiere una lista explícita de proxies/redes confiables antes de habilitar cabeceras reenviadas; la configuración local deliberadamente ignora `X-Forwarded-For` del cliente.
+- No hay proveedor de correo, caché distribuida, despliegue, recuperación operativa ni pruebas de carga incluidos en E5.

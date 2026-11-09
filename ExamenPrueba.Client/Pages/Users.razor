@@ -411,6 +411,11 @@ else
             else message = "No tienes permiso para esta operación.";
             return;
         }
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            message = RateLimitMessage(response);
+            return;
+        }
 
         var defaultMessage = response.StatusCode switch
         {
@@ -429,6 +434,14 @@ else
         {
             message = defaultMessage;
         }
+    }
+
+    private static string RateLimitMessage(HttpResponseMessage response)
+    {
+        var seconds = response.Headers.RetryAfter?.Delta?.TotalSeconds;
+        return seconds is > 0
+            ? $"Se alcanzó el límite de solicitudes. Reintenta en {Math.Ceiling(seconds.Value)} segundos."
+            : "Se alcanzó el límite de solicitudes. Espera antes de reintentar.";
     }
 
     private static string Warning(UserMutationDto? result) =>

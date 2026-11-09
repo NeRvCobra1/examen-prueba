@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using ExamenPrueba.Application.Security;
 using ExamenPrueba.Application.Users;
+using ExamenPrueba.Infrastructure.Security;
 
 namespace ExamenPrueba.Presentation.Api;
 
@@ -23,13 +24,15 @@ public static class UserApiEndpoints
             }
 
             return Results.Ok(await service.ListAsync(requestedPage, requestedPageSize, search, cancellationToken));
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersRead));
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersRead))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeRead);
 
         users.MapGet("/{id}", async (string id, IUserService service) =>
         {
             var user = await service.GetAsync(id);
             return user is null ? Results.NotFound() : Results.Ok(user);
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersRead));
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersRead))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeRead);
 
         users.MapPost("", async (CreateUserRequest request, IUserService service) =>
         {
@@ -41,7 +44,9 @@ public static class UserApiEndpoints
 
             return Results.Created($"/api/users/{Uri.EscapeDataString(result.User!.Id)}",
                 new UserMutationDto(result.User, result.Message));
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersCreate)).ValidateApiAntiforgery();
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersCreate))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         users.MapPut("/{id}", async (string id, UpdateUserRequest request, IUserService service) =>
         {
@@ -49,7 +54,9 @@ public static class UserApiEndpoints
             return result.Kind == UserResultKind.Success
                 ? Results.Ok(new UserMutationDto(result.User!, result.Message))
                 : ToError(result);
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersUpdate)).ValidateApiAntiforgery();
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersUpdate))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         users.MapDelete("/{id}", async (string id, ClaimsPrincipal principal, IUserService service) =>
         {
@@ -61,7 +68,9 @@ public static class UserApiEndpoints
 
             var result = await service.DeleteAsync(id, actorId);
             return result.Kind == UserResultKind.Success ? Results.NoContent() : ToError(result);
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersDelete)).ValidateApiAntiforgery();
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.UsersDelete))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         return endpoints;
     }

@@ -46,7 +46,7 @@ public sealed class UserService(
         return user is null ? null : await ToDtoAsync(user);
     }
 
-    public async Task<UserResult> CreateAsync(CreateUserRequest request)
+    public async Task<UserResult> CreateAsync(CreateUserRequest request, string? returnUrl = null)
     {
         var emailError = ValidateEmail(request.Email);
         if (emailError is not null)
@@ -95,7 +95,7 @@ public sealed class UserService(
             return Conflict("No fue posible crear el usuario por un conflicto de datos.");
         }
 
-        var warning = await SendConfirmationSafelyAsync(user);
+        var warning = await SendConfirmationSafelyAsync(user, returnUrl);
         return new UserResult(UserResultKind.Success, await ToDtoAsync(user), Message: warning);
     }
 
@@ -224,14 +224,25 @@ public sealed class UserService(
             : null;
     }
 
-    private async Task<string?> SendConfirmationSafelyAsync(ApplicationUser user)
+    private async Task<string?> SendConfirmationSafelyAsync(
+        ApplicationUser user, string? returnUrl = null)
     {
         try
         {
             var code = await userManager.GenerateEmailConfirmationTokenAsync(user);
             code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
+            var query = new Dictionary<string, string?>
+            {
+                ["userId"] = user.Id,
+                ["code"] = code
+            };
+            if (!string.IsNullOrEmpty(returnUrl))
+            {
+                query["returnUrl"] = returnUrl;
+            }
+
             var link = new Uri(confirmationOptions.PublicOrigin,
-                $"Account/ConfirmEmail?userId={Uri.EscapeDataString(user.Id)}&code={Uri.EscapeDataString(code)}");
+                QueryHelpers.AddQueryString("Account/ConfirmEmail", query));
             await emailSender.SendConfirmationLinkAsync(user, user.Email!, HtmlEncoder.Default.Encode(link.ToString()));
             return null;
         }

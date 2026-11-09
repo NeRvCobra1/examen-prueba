@@ -22,5 +22,7 @@ public static class PermissionCodes
         PermissionsRead, PermissionsCreate, PermissionsUpdate, PermissionsDelete
     ];
 
+    public static bool IsSystem(string code) => All.Contains(code, StringComparer.Ordinal);
+
     public static string Policy(string code) => $"permission:{code}";
 }

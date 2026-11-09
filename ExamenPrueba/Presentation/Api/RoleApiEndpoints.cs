@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using ExamenPrueba.Application.Roles;
 using ExamenPrueba.Application.Security;
+using ExamenPrueba.Infrastructure.Security;
 
 namespace ExamenPrueba.Presentation.Api;
 
@@ -26,13 +27,15 @@ public static class RoleApiEndpoints
 
             return Results.Ok(await service.ListAsync(
                 requestedPage, requestedPageSize, search, cancellationToken));
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesRead));
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesRead))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeRead);
 
         roles.MapGet("/{id}", async (string id, IRoleService service, CancellationToken cancellationToken) =>
         {
             var role = await service.GetAsync(id, cancellationToken);
             return role is null ? Results.NotFound() : Results.Ok(role);
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesRead));
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesRead))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeRead);
 
         roles.MapPost("", async (CreateRoleRequest request, IRoleService service) =>
         {
@@ -40,26 +43,33 @@ public static class RoleApiEndpoints
             return result.Kind == RoleResultKind.Success
                 ? Results.Created($"/api/roles/{Uri.EscapeDataString(result.Role!.Id)}", result.Role)
                 : ToError(result);
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesCreate)).ValidateApiAntiforgery();
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesCreate))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         roles.MapPut("/{id}", async (string id, UpdateRoleRequest request, IRoleService service) =>
         {
             var result = await service.UpdateAsync(id, request);
             return result.Kind == RoleResultKind.Success ? Results.Ok(result.Role) : ToError(result);
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesUpdate)).ValidateApiAntiforgery();
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesUpdate))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         roles.MapDelete("/{id}", async (string id, IRoleService service, CancellationToken cancellationToken) =>
         {
             var result = await service.DeleteAsync(id, cancellationToken);
             return result.Kind == RoleResultKind.Success ? Results.NoContent() : ToError(result);
-        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesDelete)).ValidateApiAntiforgery();
+        }).RequireAuthorization(PermissionCodes.Policy(PermissionCodes.RolesDelete))
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         endpoints.MapGet("/api/users/{userId}/roles", async (
             string userId, IRoleService service, CancellationToken cancellationToken) =>
         {
             var result = await service.GetUserRolesAsync(userId, cancellationToken);
             return result.Kind == RoleResultKind.Success ? Results.Ok(result.UserRoles) : ToError(result);
-        }).RequireAuthorization(SecurityPolicies.UserRolesRead);
+        }).RequireAuthorization(SecurityPolicies.UserRolesRead)
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeRead);
 
         endpoints.MapPost("/api/users/{userId}/roles/{roleId}", async (
             string userId, string roleId, ClaimsPrincipal principal, IRoleService service) =>
@@ -72,7 +82,9 @@ public static class RoleApiEndpoints
 
             var result = await service.AssignAsync(userId, roleId, actorId);
             return result.Kind == RoleResultKind.Success ? Results.Ok(result.UserRoles) : ToError(result);
-        }).RequireAuthorization(SecurityPolicies.UserRolesManage).ValidateApiAntiforgery();
+        }).RequireAuthorization(SecurityPolicies.UserRolesManage)
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         endpoints.MapDelete("/api/users/{userId}/roles/{roleId}", async (
             string userId, string roleId, ClaimsPrincipal principal, IRoleService service,
@@ -86,7 +98,9 @@ public static class RoleApiEndpoints
 
             var result = await service.RevokeAsync(userId, roleId, actorId, cancellationToken);
             return result.Kind == RoleResultKind.Success ? Results.Ok(result.UserRoles) : ToError(result);
-        }).RequireAuthorization(SecurityPolicies.UserRolesManage).ValidateApiAntiforgery();
+        }).RequireAuthorization(SecurityPolicies.UserRolesManage)
+            .RequireRateLimiting(RateLimitPolicyNames.AdministrativeMutation)
+            .ValidateApiAntiforgery();
 
         return endpoints;
     }

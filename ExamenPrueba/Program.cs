@@ -1,9 +1,9 @@
-using System.Globalization;
-using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using ExamenPrueba.Application.Authentication;
 using ExamenPrueba.Application.Security;
+using ExamenPrueba.Application.Permissions;
 using ExamenPrueba.Application.Roles;
 using ExamenPrueba.Application.Users;
 using ExamenPrueba.Client.Pages;
@@ -46,12 +46,30 @@ builder.Services.AddAuthorization(options =>
         .AddRequirements(
             new PermissionRequirement(PermissionCodes.UsersUpdate),
             new PermissionRequirement(PermissionCodes.RolesUpdate)));
+    options.AddPolicy(SecurityPolicies.RolePermissionsRead, policy => policy
+        .RequireAuthenticatedUser()
+        .AddRequirements(
+            new PermissionRequirement(PermissionCodes.RolesRead),
+            new PermissionRequirement(PermissionCodes.PermissionsRead)));
+    options.AddPolicy(SecurityPolicies.RolePermissionsManage, policy => policy
+        .RequireAuthenticatedUser()
+        .AddRequirements(
+            new PermissionRequirement(PermissionCodes.RolesUpdate),
+            new PermissionRequirement(PermissionCodes.PermissionsUpdate)));
 });
 builder.Services.AddScoped<IPermissionService, PermissionService>();
 builder.Services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
+builder.Services.AddScoped<IAccountAuthenticationService, AccountAuthenticationService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IRoleService, RoleService>();
-builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
+builder.Services.AddScoped<IPermissionManagementService, PermissionManagementService>();
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+});
 
 var publicOriginValue = builder.Configuration["Application:PublicOrigin"];
 if (!Uri.TryCreate(publicOriginValue, UriKind.Absolute, out var publicOrigin) ||
@@ -75,6 +93,9 @@ builder.Services.AddIdentityCore<ApplicationUser>(IdentityModelOptions.Configure
 
 builder.Services.ConfigureApplicationCookie(options =>
 {
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Lax;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
     options.Events.OnRedirectToLogin = context =>
     {
         if (context.Request.Path.StartsWithSegments("/api"))
@@ -104,45 +125,7 @@ builder.Services.ConfigureApplicationCookie(options =>
 });
 
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
-
-var loginLimit = builder.Configuration.GetSection(LoginRateLimitOptions.SectionName).Get<LoginRateLimitOptions>() ?? new();
-if (loginLimit.PermitLimit < 1 || loginLimit.WindowSeconds < 1)
-{
-    throw new InvalidOperationException("RateLimiting:Login requiere PermitLimit y WindowSeconds mayores que cero.");
-}
-
-builder.Services.AddRateLimiter(options =>
-{
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-    {
-        if (HttpMethods.IsPost(context.Request.Method) &&
-            string.Equals(context.Request.Path.Value, "/Account/Login", StringComparison.OrdinalIgnoreCase))
-        {
-            var remoteIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            return RateLimitPartition.GetFixedWindowLimiter(remoteIp, _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = loginLimit.PermitLimit,
-                Window = TimeSpan.FromSeconds(loginLimit.WindowSeconds),
-                QueueLimit = 0,
-                AutoReplenishment = true
-            });
-        }
-
-        return RateLimitPartition.GetNoLimiter("unlimited");
-    });
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.OnRejected = async (context, cancellationToken) =>
-    {
-        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
-        {
-            context.HttpContext.Response.Headers.RetryAfter =
-                Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(CultureInfo.InvariantCulture);
-        }
-
-        await context.HttpContext.Response.WriteAsync("Demasiados intentos de inicio de sesión.", cancellationToken);
-    };
-});
+builder.Services.AddApplicationRateLimiting(builder.Configuration);
 
 var app = builder.Build();
 
@@ -163,8 +146,8 @@ else
 app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), branch =>
     branch.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true));
 app.UseHttpsRedirection();
-app.UseRateLimiter();
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 
 app.UseAntiforgery();
@@ -176,8 +159,12 @@ app.MapRazorComponents<App>()
 
 // Add additional endpoints required by the Identity /Account Razor components.
 app.MapAdditionalIdentityEndpoints();
+app.MapAuthApi();
 app.MapSecurityApi();
 app.MapUserApi();
 app.MapRoleApi();
+app.MapPermissionApi();
 
 app.Run();
+
+public partial class Program;

@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
@@ -7,6 +6,7 @@ using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Primitives;
+using ExamenPrueba.Application.Authentication;
 using ExamenPrueba.Components.Account.Pages;
 using ExamenPrueba.Components.Account.Pages.Manage;
 using ExamenPrueba.Data;
@@ -42,13 +42,12 @@ internal static class IdentityComponentsEndpointRouteBuilderExtensions
         });
 
         accountGroup.MapPost("/Logout", async (
-            ClaimsPrincipal user,
-            [FromServices] SignInManager<ApplicationUser> signInManager,
+            [FromServices] IAccountAuthenticationService authenticationService,
             [FromForm] string returnUrl) =>
         {
-            await signInManager.SignOutAsync();
+            await authenticationService.LogoutAsync();
             return TypedResults.LocalRedirect($"~/{returnUrl}");
-        });
+        }).RequireAuthorization();
 
         accountGroup.MapPost("/PasskeyCreationOptions", async (
             HttpContext context,

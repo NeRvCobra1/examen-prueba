@@ -54,7 +54,7 @@ def available_port():
         return listener.getsockname()[1]
 
 
-def start_server(port, admin_email, admin_password, bootstrap):
+def start_server(port, admin_email, admin_password, bootstrap, extra_environment=None):
     environment = os.environ.copy()
     environment.update(
         ASPNETCORE_ENVIRONMENT="Development",
@@ -64,8 +64,14 @@ def start_server(port, admin_email, admin_password, bootstrap):
         AdminBootstrap__Enabled=str(bootstrap).lower(),
         AdminBootstrap__Email=admin_email,
         AdminBootstrap__Password=admin_password,
+        RateLimiting__Registration__PermitLimit="1000",
+        RateLimiting__AdministrativeRead__PermitLimit="1000",
+        RateLimiting__AdministrativeMutation__PermitLimit="1000",
         Logging__LogLevel__Microsoft_EntityFrameworkCore_Database_Command="Warning",
+        Logging__EventLog__LogLevel__Default="None",
     )
+    if extra_environment:
+        environment.update(extra_environment)
     process = subprocess.Popen(
         ["dotnet", str(APP)],
         cwd=SERVER,
@@ -75,7 +81,7 @@ def start_server(port, admin_email, admin_password, bootstrap):
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     base = f"https://localhost:{port}/"
-    for _ in range(100):
+    for _ in range(300):
         if process.poll() is not None:
             raise RuntimeError(f"Server exited during startup with code {process.returncode}")
         try:
@@ -84,7 +90,8 @@ def start_server(port, admin_email, admin_password, bootstrap):
                     return process, base
         except (OSError, urllib.error.URLError):
             time.sleep(0.2)
-    raise RuntimeError("Server did not become ready")
+    stop_server(process)
+    raise RuntimeError("Server did not become ready after 60 seconds")
 
 
 def stop_server(process):

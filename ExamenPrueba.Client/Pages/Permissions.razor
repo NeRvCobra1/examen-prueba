@@ -1,0 +1,360 @@
+@page "/permissions"
+
+@using System.Net
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.WebAssembly.Http
+@using Microsoft.JSInterop
+
+@attribute [Authorize]
+@rendermode @(new InteractiveWebAssemblyRenderMode(prerender: false))
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<PageTitle>Permisos</PageTitle>
+<h1>Permisos</h1>
+
+@if (needsLogin)
+{
+    <p role="alert">La sesión terminó. <a href="Account/Login?returnUrl=%2Fpermissions">Inicia sesión</a>.</p>
+}
+else if (accessDenied)
+{
+    <p role="alert">No tienes el permiso permissions.read.</p>
+}
+else if (isLoading)
+{
+    <p>Cargando permisos...</p>
+}
+else
+{
+    @if (message is not null)
+    {
+        <p role="status">@message</p>
+    }
+
+    <form @onsubmit="SearchAsync" @onsubmit:preventDefault class="row g-2 mb-3">
+        <div class="col-sm-6">
+            <label for="permission-search" class="form-label">Buscar por código o nombre</label>
+            <input id="permission-search" class="form-control" @bind="searchInput" maxlength="128" />
+        </div>
+        <div class="col-sm-auto align-self-end">
+            <button type="submit" class="btn btn-outline-primary">Buscar</button>
+        </div>
+    </form>
+
+    @if (Can("permissions.create"))
+    {
+        <button type="button" class="btn btn-primary mb-3" @onclick="ToggleCreate">Crear permiso</button>
+        @if (showCreate)
+        {
+            <form @onsubmit="CreateAsync" @onsubmit:preventDefault class="card card-body mb-3">
+                <h2 class="h5">Nuevo permiso personalizado</h2>
+                <label for="create-permission-code" class="form-label">Código técnico</label>
+                <input id="create-permission-code" class="form-control mb-2" @bind="createCode"
+                       required maxlength="128" placeholder="reports.read" />
+                <label for="create-permission-name" class="form-label">Nombre</label>
+                <input id="create-permission-name" class="form-control mb-2" @bind="createName"
+                       required maxlength="200" />
+                <label for="create-permission-description" class="form-label">Descripción</label>
+                <textarea id="create-permission-description" class="form-control mb-2"
+                          @bind="createDescription" maxlength="500"></textarea>
+                <p class="form-text">Crear el permiso no lo asigna a un rol ni protege automáticamente una API.</p>
+                <button type="submit" class="btn btn-primary" disabled="@isSaving">Guardar</button>
+            </form>
+        }
+    }
+
+    <p>Total: @totalCount</p>
+    <table class="table table-striped">
+        <thead>
+            <tr><th>Código</th><th>Nombre</th><th>Tipo</th><th>Roles</th><th>Acciones</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var permission in permissions)
+            {
+                <tr>
+                    <td><code>@permission.Code</code></td>
+                    <td>@permission.Name</td>
+                    <td>@(permission.IsSystem ? "Sistema" : "Personalizado")</td>
+                    <td>@permission.RoleCount</td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                                @onclick="() => ShowDetailsAsync(permission.Id)">Detalle</button>
+                        @if (!permission.IsSystem && Can("permissions.update"))
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-primary me-1"
+                                    @onclick="() => BeginEdit(permission)">Editar</button>
+                        }
+                        @if (!permission.IsSystem && Can("permissions.delete"))
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-danger"
+                                    @onclick="() => DeleteAsync(permission)">Eliminar</button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <div class="d-flex align-items-center gap-2 mb-3">
+        <button type="button" class="btn btn-outline-secondary" disabled="@(page <= 1)"
+                @onclick="PreviousPageAsync">Anterior</button>
+        <span>Página @(page) de @PageCount</span>
+        <button type="button" class="btn btn-outline-secondary" disabled="@(page >= PageCount)"
+                @onclick="NextPageAsync">Siguiente</button>
+    </div>
+
+    @if (selectedPermission is not null)
+    {
+        <section class="card card-body mb-3">
+            <h2 class="h5">Detalle del permiso</h2>
+            <p>Id: @selectedPermission.Id</p>
+            <p>Código: <code>@selectedPermission.Code</code></p>
+            <p>Nombre: @selectedPermission.Name</p>
+            <p>Descripción: @(selectedPermission.Description ?? "Sin descripción")</p>
+            <p>Tipo: @(selectedPermission.IsSystem ? "Sistema protegido" : "Personalizado")</p>
+            <p>Roles asociados: @selectedPermission.RoleCount</p>
+        </section>
+    }
+
+    @if (editPermission is not null)
+    {
+        <form @onsubmit="UpdateAsync" @onsubmit:preventDefault class="card card-body mb-3">
+            <h2 class="h5">Editar permiso personalizado</h2>
+            <p>Código inmutable: <code>@editPermission.Code</code></p>
+            <label for="edit-permission-name" class="form-label">Nombre</label>
+            <input id="edit-permission-name" class="form-control mb-2" @bind="editName"
+                   required maxlength="200" />
+            <label for="edit-permission-description" class="form-label">Descripción</label>
+            <textarea id="edit-permission-description" class="form-control mb-2"
+                      @bind="editDescription" maxlength="500"></textarea>
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary" disabled="@isSaving">Guardar cambios</button>
+                <button type="button" class="btn btn-outline-secondary" @onclick="CancelEdit">Cancelar</button>
+            </div>
+        </form>
+    }
+}
+
+@code {
+    private readonly HashSet<string> capabilities = new(StringComparer.Ordinal);
+    private List<PermissionDto> permissions = [];
+    private PermissionDto? selectedPermission;
+    private PermissionDto? editPermission;
+    private string searchInput = "";
+    private string search = "";
+    private string createCode = "";
+    private string createName = "";
+    private string createDescription = "";
+    private string editName = "";
+    private string editDescription = "";
+    private string? message;
+    private int page = 1;
+    private int totalCount;
+    private const int PageSize = 10;
+    private bool isLoading = true;
+    private bool isSaving;
+    private bool needsLogin;
+    private bool accessDenied;
+    private bool showCreate;
+
+    private int PageCount => Math.Max(1, (totalCount + PageSize - 1) / PageSize);
+    private bool Can(string code) => capabilities.Contains(code);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        try
+        {
+            using var capabilityResponse = await SendAsync(HttpMethod.Get, "api/security/capabilities");
+            if (!capabilityResponse.IsSuccessStatusCode) { await HandleErrorAsync(capabilityResponse); return; }
+            capabilities.Clear();
+            foreach (var code in await capabilityResponse.Content.ReadFromJsonAsync<string[]>() ?? [])
+            {
+                capabilities.Add(code);
+            }
+
+            using var response = await SendAsync(HttpMethod.Get,
+                $"api/permissions?page={page}&pageSize={PageSize}&search={Uri.EscapeDataString(search)}");
+            if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response, readFailure: true); return; }
+            var result = await response.Content.ReadFromJsonAsync<PermissionPageDto>();
+            permissions = result?.Items ?? [];
+            totalCount = result?.TotalCount ?? 0;
+            if (page > PageCount) { page = PageCount; await LoadAsync(); }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            message = "No fue posible cargar los permisos.";
+        }
+        finally { isLoading = false; }
+    }
+
+    private async Task SearchAsync()
+    {
+        search = searchInput.Trim();
+        page = 1;
+        selectedPermission = null;
+        await LoadAsync();
+    }
+
+    private async Task PreviousPageAsync() { page--; await LoadAsync(); }
+    private async Task NextPageAsync() { page++; await LoadAsync(); }
+    private void ToggleCreate() => showCreate = !showCreate;
+    private void BeginEdit(PermissionDto permission)
+    {
+        editPermission = permission;
+        editName = permission.Name;
+        editDescription = permission.Description ?? "";
+    }
+    private void CancelEdit() => editPermission = null;
+
+    private async Task ShowDetailsAsync(int id)
+    {
+        try
+        {
+            using var response = await SendAsync(HttpMethod.Get, $"api/permissions/{id}");
+            if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response, readFailure: true); return; }
+            selectedPermission = await response.Content.ReadFromJsonAsync<PermissionDto>();
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            message = "No fue posible cargar el detalle del permiso.";
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        isSaving = true;
+        try
+        {
+            using var response = await SendMutationAsync(HttpMethod.Post, "api/permissions",
+                new CreatePermissionRequest(createCode, createName, createDescription));
+            if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response); return; }
+            createCode = createName = createDescription = "";
+            showCreate = false;
+            await LoadAsync();
+            message = "Permiso personalizado creado sin asignaciones.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            message = "No fue posible crear el permiso.";
+        }
+        finally { isSaving = false; }
+    }
+
+    private async Task UpdateAsync()
+    {
+        if (editPermission is null) return;
+        isSaving = true;
+        try
+        {
+            using var response = await SendMutationAsync(HttpMethod.Put,
+                $"api/permissions/{editPermission.Id}", new UpdatePermissionRequest(editName, editDescription));
+            if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response); return; }
+            selectedPermission = await response.Content.ReadFromJsonAsync<PermissionDto>();
+            editPermission = null;
+            await LoadAsync();
+            message = "Permiso actualizado sin cambiar su código.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            message = "No fue posible actualizar el permiso.";
+        }
+        finally { isSaving = false; }
+    }
+
+    private async Task DeleteAsync(PermissionDto permission)
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", $"¿Eliminar el permiso {permission.Code}?")) return;
+        isSaving = true;
+        try
+        {
+            using var response = await SendMutationAsync(HttpMethod.Delete,
+                $"api/permissions/{permission.Id}", null);
+            if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response); return; }
+            if (selectedPermission?.Id == permission.Id) selectedPermission = null;
+            if (editPermission?.Id == permission.Id) editPermission = null;
+            await LoadAsync();
+            message = "Permiso eliminado.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            message = "No fue posible eliminar el permiso.";
+        }
+        finally { isSaving = false; }
+    }
+
+    private async Task<HttpResponseMessage> SendMutationAsync(HttpMethod method, string path, object? body)
+    {
+        using var tokenResponse = await SendAsync(HttpMethod.Get, "api/security/antiforgery");
+        if (!tokenResponse.IsSuccessStatusCode) return new HttpResponseMessage(tokenResponse.StatusCode);
+        var token = (await tokenResponse.Content.ReadFromJsonAsync<TokenDto>())?.Token
+            ?? throw new HttpRequestException("No se recibió el token antiforgery.");
+        return await SendAsync(method, path, body, token);
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(
+        HttpMethod method, string path, object? body = null, string? token = null)
+    {
+        using var request = new HttpRequestMessage(method, path);
+        request.SetBrowserRequestCredentials(BrowserRequestCredentials.SameOrigin);
+        if (body is not null) request.Content = JsonContent.Create(body);
+        if (token is not null) request.Headers.Add("X-CSRF-TOKEN", token);
+        return await Http.SendAsync(request);
+    }
+
+    private async Task HandleErrorAsync(HttpResponseMessage response, bool readFailure = false)
+    {
+        if (response.StatusCode == HttpStatusCode.Unauthorized) { needsLogin = true; return; }
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (readFailure) accessDenied = true;
+            else message = "No tienes permiso para esta operación.";
+            return;
+        }
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            message = RateLimitMessage(response);
+            return;
+        }
+
+        var fallback = response.StatusCode switch
+        {
+            HttpStatusCode.BadRequest => "Datos inválidos o token antiforgery vencido.",
+            HttpStatusCode.NotFound => "El permiso ya no existe.",
+            HttpStatusCode.Conflict => "La operación entra en conflicto con el estado del permiso.",
+            _ => "No fue posible completar la operación."
+        };
+        try
+        {
+            var problem = await response.Content.ReadFromJsonAsync<ApiProblem>();
+            message = problem?.Detail ?? problem?.Errors?.Values.SelectMany(values => values).FirstOrDefault()
+                ?? problem?.Title ?? fallback;
+        }
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
+        {
+            message = fallback;
+        }
+    }
+
+    private static string RateLimitMessage(HttpResponseMessage response)
+    {
+        var seconds = response.Headers.RetryAfter?.Delta?.TotalSeconds;
+        return seconds is > 0
+            ? $"Se alcanzó el límite de solicitudes. Reintenta en {Math.Ceiling(seconds.Value)} segundos."
+            : "Se alcanzó el límite de solicitudes. Espera antes de reintentar.";
+    }
+
+    private sealed record CreatePermissionRequest(string Code, string Name, string? Description);
+    private sealed record UpdatePermissionRequest(string Name, string? Description);
+    private sealed record PermissionDto(
+        int Id, string Code, string Name, string? Description, bool IsSystem, int RoleCount);
+    private sealed record PermissionPageDto(
+        List<PermissionDto> Items, int Page, int PageSize, int TotalCount);
+    private sealed record TokenDto(string Token);
+    private sealed record ApiProblem(string? Title, string? Detail, Dictionary<string, string[]>? Errors);
+}

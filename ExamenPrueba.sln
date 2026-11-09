@@ -6,6 +6,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ExamenPrueba", "ExamenPrueb
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ExamenPrueba.Client", "ExamenPrueba.Client\ExamenPrueba.Client.csproj", "{E1623C4B-43EF-47A9-A4DF-88F4B6EB6FB7}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ExamenPrueba.Tests", "ExamenPrueba.Tests\ExamenPrueba.Tests.csproj", "{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -40,6 +42,18 @@ Global
 		{6EF28091-142A-48E6-8B86-BC5F66E01FC1}.Release|x64.Build.0 = Release|Any CPU
 		{6EF28091-142A-48E6-8B86-BC5F66E01FC1}.Release|x86.ActiveCfg = Release|Any CPU
 		{6EF28091-142A-48E6-8B86-BC5F66E01FC1}.Release|x86.Build.0 = Release|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Debug|x64.Build.0 = Debug|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Debug|x86.Build.0 = Debug|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Release|x64.ActiveCfg = Release|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Release|x64.Build.0 = Release|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Release|x86.ActiveCfg = Release|Any CPU
+		{8C8DA2D1-2D97-4D39-BEBB-6A489DAF10C7}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

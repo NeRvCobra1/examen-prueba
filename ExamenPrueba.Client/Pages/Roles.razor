@@ -100,6 +100,49 @@ else
             <p>Nombre: @selectedRole.Name</p>
             <p>Tipo: @(selectedRole.IsProtected ? "Protegido" : "Personalizado")</p>
             <p>Usuarios asignados: @selectedRole.UserCount</p>
+
+            @if (CanReadRolePermissions)
+            {
+                <h3 class="h6">Matriz Rol–Permiso</h3>
+                @if (rolePermissions is null)
+                {
+                    <p>Cargando permisos del rol...</p>
+                }
+                else
+                {
+                    @if (CanManageRolePermissions && !isCurrentAdmin)
+                    {
+                        <p class="text-warning">Las modificaciones requieren además un operador Admin vigente.</p>
+                    }
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr><th>Asignado</th><th>Código</th><th>Nombre</th><th>Tipo</th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var permission in rolePermissions.Permissions)
+                                {
+                                    <tr>
+                                        <td>
+                                            <input type="checkbox" class="form-check-input"
+                                                   checked="@permission.Assigned"
+                                                   disabled="@(isSaving || permission.Locked || !CanManageRolePermissions || !isCurrentAdmin)"
+                                                   @onchange="() => ChangePermissionAsync(permission)" />
+                                        </td>
+                                        <td><code>@permission.Code</code></td>
+                                        <td>@permission.Name@(permission.Locked ? " (protegido)" : "")</td>
+                                        <td>@(permission.IsSystem ? "Sistema" : "Personalizado")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+            else
+            {
+                <p>La matriz requiere conjuntamente roles.read y permissions.read.</p>
+            }
         </section>
     }
 
@@ -122,6 +165,7 @@ else
     private List<RoleDto> roles = [];
     private RoleDto? selectedRole;
     private RoleDto? editRole;
+    private RolePermissionsDto? rolePermissions;
     private string searchInput = "";
     private string search = "";
     private string createName = "";
@@ -135,9 +179,12 @@ else
     private bool needsLogin;
     private bool accessDenied;
     private bool showCreate;
+    private bool isCurrentAdmin;
 
     private int PageCount => Math.Max(1, (totalCount + PageSize - 1) / PageSize);
     private bool Can(string code) => capabilities.Contains(code);
+    private bool CanReadRolePermissions => Can("roles.read") && Can("permissions.read");
+    private bool CanManageRolePermissions => Can("roles.update") && Can("permissions.update");
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
@@ -154,6 +201,11 @@ else
                 capabilities.Add(code);
             }
 
+            using var meResponse = await SendAsync(HttpMethod.Get, "api/auth/me");
+            if (!meResponse.IsSuccessStatusCode) { await HandleErrorAsync(meResponse); return; }
+            isCurrentAdmin = (await meResponse.Content.ReadFromJsonAsync<MeDto>())?.Roles
+                .Contains("Admin", StringComparer.Ordinal) == true;
+
             using var response = await SendAsync(HttpMethod.Get,
                 $"api/roles?page={page}&pageSize={PageSize}&search={Uri.EscapeDataString(search)}");
             if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response, readFailure: true); return; }
@@ -169,7 +221,14 @@ else
         finally { isLoading = false; }
     }
 
-    private async Task SearchAsync() { search = searchInput.Trim(); page = 1; selectedRole = null; await LoadAsync(); }
+    private async Task SearchAsync()
+    {
+        search = searchInput.Trim();
+        page = 1;
+        selectedRole = null;
+        rolePermissions = null;
+        await LoadAsync();
+    }
     private async Task PreviousPageAsync() { page--; await LoadAsync(); }
     private async Task NextPageAsync() { page++; await LoadAsync(); }
     private void ToggleCreate() => showCreate = !showCreate;
@@ -183,6 +242,11 @@ else
             using var response = await SendAsync(HttpMethod.Get, $"api/roles/{Uri.EscapeDataString(id)}");
             if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response, readFailure: true); return; }
             selectedRole = await response.Content.ReadFromJsonAsync<RoleDto>();
+            rolePermissions = null;
+            if (selectedRole is not null && CanReadRolePermissions)
+            {
+                await LoadRolePermissionsAsync(selectedRole.Id);
+            }
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException)
         {
@@ -240,6 +304,7 @@ else
                 $"api/roles/{Uri.EscapeDataString(role.Id)}", null);
             if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response); return; }
             if (selectedRole?.Id == role.Id) selectedRole = null;
+            if (rolePermissions?.RoleId == role.Id) rolePermissions = null;
             if (editRole?.Id == role.Id) editRole = null;
             await LoadAsync();
             message = "Rol eliminado.";
@@ -247,6 +312,36 @@ else
         catch (Exception exception) when (exception is HttpRequestException or JsonException)
         {
             message = "No fue posible eliminar el rol.";
+        }
+        finally { isSaving = false; }
+    }
+
+    private async Task LoadRolePermissionsAsync(string roleId)
+    {
+        using var response = await SendAsync(HttpMethod.Get,
+            $"api/roles/{Uri.EscapeDataString(roleId)}/permissions");
+        if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response); return; }
+        rolePermissions = await response.Content.ReadFromJsonAsync<RolePermissionsDto>();
+    }
+
+    private async Task ChangePermissionAsync(RolePermissionDto permission)
+    {
+        if (selectedRole is null || permission.Locked || !isCurrentAdmin) return;
+        isSaving = true;
+        try
+        {
+            var method = permission.Assigned ? HttpMethod.Delete : HttpMethod.Post;
+            using var response = await SendMutationAsync(method,
+                $"api/roles/{Uri.EscapeDataString(selectedRole.Id)}/permissions/{permission.Id}", null);
+            if (!response.IsSuccessStatusCode) { await HandleErrorAsync(response); return; }
+            rolePermissions = await response.Content.ReadFromJsonAsync<RolePermissionsDto>();
+            message = permission.Assigned
+                ? $"Permiso {permission.Code} revocado del rol."
+                : $"Permiso {permission.Code} asignado al rol.";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            message = "No fue posible cambiar la asignación de permiso.";
         }
         finally { isSaving = false; }
     }
@@ -278,6 +373,11 @@ else
             else message = "No tienes permiso para esta operación.";
             return;
         }
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            message = RateLimitMessage(response);
+            return;
+        }
 
         var fallback = response.StatusCode switch
         {
@@ -298,9 +398,22 @@ else
         }
     }
 
+    private static string RateLimitMessage(HttpResponseMessage response)
+    {
+        var seconds = response.Headers.RetryAfter?.Delta?.TotalSeconds;
+        return seconds is > 0
+            ? $"Se alcanzó el límite de solicitudes. Reintenta en {Math.Ceiling(seconds.Value)} segundos."
+            : "Se alcanzó el límite de solicitudes. Espera antes de reintentar.";
+    }
+
     private sealed record RoleRequest(string Name);
     private sealed record RoleDto(string Id, string Name, bool IsProtected, int UserCount);
     private sealed record RolePageDto(List<RoleDto> Items, int Page, int PageSize, int TotalCount);
+    private sealed record MeDto(string Id, string? Email, string[] Roles);
+    private sealed record RolePermissionDto(
+        int Id, string Code, string Name, string? Description, bool IsSystem, bool Assigned, bool Locked);
+    private sealed record RolePermissionsDto(
+        string RoleId, string RoleName, bool IsProtected, List<RolePermissionDto> Permissions);
     private sealed record TokenDto(string Token);
     private sealed record ApiProblem(string? Title, string? Detail, Dictionary<string, string[]>? Errors);
 }

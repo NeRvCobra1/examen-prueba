@@ -1,0 +1,124 @@
+@page "/dashboard"
+
+@using System.Net
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.WebAssembly.Http
+
+@attribute [Authorize]
+@rendermode @(new InteractiveWebAssemblyRenderMode(prerender: false))
+@inject HttpClient Http
+
+<PageTitle>Dashboard</PageTitle>
+<h1>Dashboard</h1>
+
+@if (isLoading)
+{
+    <p>Cargando información...</p>
+}
+else if (needsLogin)
+{
+    <p>La sesión no está autenticada. <a href="Account/Login?returnUrl=%2Fdashboard">Inicia sesión</a>.</p>
+}
+else if (error is not null)
+{
+    <p role="alert">@error</p>
+}
+else if (me is not null)
+{
+    <p>Usuario: @me.Email</p>
+    <p>Roles: @string.Join(", ", me.Roles)</p>
+
+    <h2>Permisos efectivos</h2>
+    @if (capabilities.Length == 0)
+    {
+        <p>Sin permisos administrativos.</p>
+    }
+    else
+    {
+        <ul>
+            @foreach (var permissionCode in capabilities)
+            {
+                <li>@permissionCode</li>
+            }
+        </ul>
+    }
+
+    <h2>Resumen administrativo</h2>
+    @if (adminAccessDenied)
+    {
+        <p>Acceso denegado: falta el permiso users.read.</p>
+    }
+    else if (overview is not null)
+    {
+        <p>@overview.Message</p>
+    }
+}
+
+@code {
+    private bool isLoading = true;
+    private bool needsLogin;
+    private bool adminAccessDenied;
+    private string? error;
+    private MeResponse? me;
+    private OverviewResponse? overview;
+    private string[] capabilities = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            using var meResponse = await GetAsync("api/auth/me");
+            if (meResponse.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                needsLogin = true;
+                return;
+            }
+
+            meResponse.EnsureSuccessStatusCode();
+            me = await meResponse.Content.ReadFromJsonAsync<MeResponse>();
+
+            using var capabilitiesResponse = await GetAsync("api/security/capabilities");
+            if (capabilitiesResponse.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                needsLogin = true;
+                return;
+            }
+
+            capabilitiesResponse.EnsureSuccessStatusCode();
+            capabilities = await capabilitiesResponse.Content.ReadFromJsonAsync<string[]>() ?? [];
+
+            using var overviewResponse = await GetAsync("api/admin/overview");
+            if (overviewResponse.StatusCode == HttpStatusCode.Forbidden)
+            {
+                adminAccessDenied = true;
+            }
+            else if (overviewResponse.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                needsLogin = true;
+            }
+            else
+            {
+                overviewResponse.EnsureSuccessStatusCode();
+                overview = await overviewResponse.Content.ReadFromJsonAsync<OverviewResponse>();
+            }
+        }
+        catch (HttpRequestException)
+        {
+            error = "No fue posible cargar el Dashboard.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task<HttpResponseMessage> GetAsync(string path)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.SetBrowserRequestCredentials(BrowserRequestCredentials.SameOrigin);
+        return await Http.SendAsync(request);
+    }
+
+    private sealed record MeResponse(string Id, string? Email, string[] Roles);
+    private sealed record OverviewResponse(string Message);
+}
